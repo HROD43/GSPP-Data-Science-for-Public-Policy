@@ -1,0 +1,414 @@
+---
+title: "Exploration of Growth in Female Farmers in California, 2002-2012"
+author: "Hortencia Rodríguez"
+output: html_notebook
+---
+
+```{r}
+
+# Loading packages
+library(maps) # mapping
+library(ggplot2) # mapping + plotting package 
+library(choroplethr) # mapping 
+library(tidyverse) # pipe operator +
+library(lubridate) # helps with strings 
+library(gmodels) # helps tabulate 
+ 
+
+# Assigning working directory 
+setwd("/Users/hortenciarodriguez/Desktop/Data Science for Public Policy/Final Project/Data/THE ONE")
+
+# Read in data and assign NA to all blanks 
+California <- read.csv("CA_FINAL.csv",
+  na.strings = c("", " "))
+
+# Dropping variables I don't need
+California$state <- NULL
+California$agdistrict <- NULL
+California$cv <- NULL
+```
+
+```{r} 
+# Mapping growth of female farmers from 2002-2012
+
+# Subsetting data.frame for mapping with choroplethr
+CA_sub <- California[,c("year", "region", "county", "dataitem", "value")]
+
+# Data frame for total number of female operators by county for 2012, 2007 and 2002
+CA_fops <- filter(CA_sub, dataitem == "OPERATORS, (ALL), FEMALE - NUMBER OF OPERATORS")
+
+# Converting value variable into numeric 
+CA_fops$value <- as.numeric(CA_fops$value)
+
+#  Creating a column difference between 2002 and 2012 and then log the difference 
+CA_map <- CA_fops %>%
+  filter(year == 2012 | year == 2002)
+CA_map$diff <- c(0, diff(CA_map$value))
+
+# Re-shaping to test mapping package
+CA_diff <- CA_map %>% 
+  filter(year == 2012) %>%
+  select(region, value)
+
+# Mapping 
+county_map <- county_choropleth(CA_diff, 
+                 legend     = "Total",
+                 num_colors = 4,
+                 state_zoom = c("california"))
+county_map
+```
+
+```{r}
+# Mapping percent of female farmers by county in 2012
+
+CA_percent <- California %>%
+  filter(dataitem=="OPERATORS, (ALL) - NUMBER OF OPERATORS" | dataitem=="OPERATORS, (ALL), FEMALE - NUMBER OF OPERATORS")
+
+#Dropping variables that we don't need right now 
+CA_percent$acres <- NULL
+CA_percent$domain <- NULL
+CA_percent$domaincategory <- NULL
+
+# Re-shaping the data.frame to calculate percent of female farmers/county
+County_spread <- CA_percent %>%
+  spread(dataitem, value)
+
+# Renaming variables with long names 
+names(County_spread) <- c("year", "county", "region", "commodity", "all_operators", "all_foperators")
+
+# Converting variables from factor to numeric 
+County_spread$all_operators <- as.numeric(County_spread$all_operators)
+County_spread$all_foperators <- as.numeric(County_spread$all_foperators)
+
+options(scipen = 999)
+County_spread <- County_spread %>%
+  mutate(percent = all_foperators/all_operators *100)
+
+# Re-shaping the data.frame to maps with choroplethr
+CA_percent_2012 <- County_spread %>%
+  filter(year == 2012) %>%
+  select(region, percent)
+
+CA_percent_2012$value <- CA_percent_2012$percent
+CA_percent_2012$percent <- NULL
+
+county_map_2012 <- county_choropleth(CA_percent_2012, 
+                 legend     = "Total",
+                 num_colors = 4,
+                 state_zoom = c("california"))
+county_map_2012
+```
+
+```{r}
+# Splitting the data.frame into two (operators and crops) to merge and re-shape for prediction
+
+# Subsetting observations where commodity==Operators and Operators, Principal 
+CA_operators <- California %>%
+  filter (str_detect(commodity, "OPERATORS"))
+
+# Cleaning up the data.frame further to leave the bare minimum (total # of operators by crop)
+# Dropping observations that pertain to all operators (kept it for purposes of calculating % later, don't need it now)
+CA_operators_sum <- CA_operators[!(CA_operators$dataitem=="OPERATORS, (ALL) - NUMBER OF OPERATORS"), ]
+
+# Dropping observations that pertain to acres operated by female farmers (only interested in # of farmers, not acres)
+CA_operators_sum <- CA_operators_sum[!(CA_operators_sum$dataitem=="OPERATORS, FEMALE - ACRES OPERATED"), ]
+CA_operators_sum <- CA_operators_sum[!(CA_operators_sum$dataitem=="OPERATORS, PRINCIPAL, FEMALE - ACRES OPERATED"), ]
+
+# Subsetting observations where commodity==all crops and value is the total acreage  
+CA_crops <- subset(California, commodity=="ALMONDS" | 
+                               commodity=="APPLES" | 
+                               commodity=="APRICOTS" | 
+                               commodity=="AVOCADOS" | 
+                               commodity=="BANANAS" | 
+                               commodity=="CHERRIES" | 
+                               commodity=="CHESTNUTS" | 
+                               commodity=="DATES" | 
+                               commodity=="FIGS" | 
+                               commodity=="GRAPEFRUIT" | 
+                               commodity=="GRAPES" | 
+                               commodity=="GUAVAS" | 
+                               commodity=="HAZELNUTS" | 
+                               commodity=="KIWIFRUIT" | 
+                               commodity=="KUMQUATS" | 
+                               commodity=="LEMONS" | 
+                               commodity=="LIMES" | 
+                               commodity=="MACADAMIAS" | 
+                               commodity=="MANGOES" | 
+                               commodity=="NECTARINES" | 
+                               commodity=="OLIVES" | 
+                               commodity=="ORANGES" | 
+                               commodity=="ORCHARDS" | 
+                               commodity=="PAPAYAS" | 
+                               commodity=="PASSION FRUIT" | 
+                               commodity=="PEACHES" | 
+                               commodity=="PEARS" | 
+                               commodity=="PECANS" | 
+                               commodity=="PERSIMMONS" | 
+                               commodity=="PISTACHIOS" | 
+                               commodity=="PLUMS & PRUNES" | 
+                               commodity=="POMEGRANATES" | 
+                               commodity=="TANGERINES" | 
+                               commodity=="WALNUTS")
+```
+
+```{r}
+# Modifying the crops data.frame 
+
+# Dropping acres column that I will later include as a sum
+CA_crops$acres <- NULL
+
+# Converting factor into numeric  
+CA_crops$value <- as.numeric(CA_crops$value) 
+
+# New data frame that has sum of total number of acres for each crop grouped by year 
+CA_crops_by_acres <- ddply(CA_crops,.(commodity,county,year),summarize,acres=sum(value))
+
+# Merging data sets with acres column 
+CA_crops2 <- left_join(CA_crops, CA_crops_by_acres, by = c("commodity", "county", "year"))
+```
+
+```{r}
+# Graphing top crops by number of acres under cultivation
+
+# Rank of crops by acres in 2012
+Crop_rank <- CA_crops2 %>%
+  filter(year == 2012) %>%
+  group_by(commodity) %>%
+  select(commodity, acres) %>%
+  summarise_each(funs(sum(.,na.rm = TRUE))) %>%
+  arrange(desc(acres))
+Crop_rank 
+
+Crop_rank_year <- CA_crops2 %>%
+  group_by(commodity, year) %>%
+  select(commodity, acres) %>%
+  summarise_each(funs(sum(.,na.rm = TRUE))) %>%
+  arrange(desc(acres))
+Crop_rank_year
+```
+
+```{r}
+# Pulling out tenure data 
+
+# Subsetting data to re-shape 
+Tenure <- CA_operators %>%
+  filter(domain == "TENURE") %>%
+  select(year, county, domaincategory, value)
+
+# Summing values in new column to collapse rows with FULL OR PART OWNER
+Tenure$value <- as.numeric(Tenure$value)
+Tenure_owner <- Tenure %>%
+  group_by(year, county) %>%
+  filter(domaincategory == "FULL OR PART OWNER") %>%
+  mutate(sum_value = sum(value))
+
+Tenure_owner$value <- Tenure_owner$sum_value
+Tenure_owner$sum_value <- NULL
+Tenure_owner <- unique(Tenure_owner) 
+
+# Creating another data.frame that captures only tenant values to merge with Tenure_owner 
+Tenure_tenant <- Tenure %>% 
+  group_by(year, county) %>%
+  filter(domaincategory == "TENANT")
+
+# Merging!
+Tenure_merged <- bind_rows(Tenure_tenant, Tenure_owner)
+
+# Re-shaping
+Tenure_spread <- Tenure_merged %>%
+  spread(domaincategory, value)
+```
+
+```{r}
+# Create line graph for ownership vs tenant status 
+Total_CA_Tenure <- NULL
+
+# First we need to re-shape our data 
+Total_CA_Tenure <- Tenure_spread %>%
+  group_by(year) %>%
+  select(-county) %>%
+  summarise_each(funs(sum(.,na.rm = TRUE)))
+  
+# Rename variable for ease of plotting
+Total_CA_Tenure$OWNER <- Total_CA_Tenure$`FULL OR PART OWNER`
+Total_CA_Tenure$`FULL OR PART OWNER` <- NULL
+
+# Re-shaping for easier plotting 
+Tenure2 <- gather(Total_CA_Tenure, STATUS, TOTAL, TENANT, OWNER)
+Tenure2$year<-as.factor(Tenure2$year)
+
+# Now, we can plot  
+Change_Tenure <- ggplot(Tenure2, aes(x=year, y=TOTAL, group=STATUS)) +
+  geom_line(aes(color=STATUS)) +
+  geom_point(aes(color=STATUS)) +
+  theme_bw() +
+  scale_color_brewer(palette="Dark2") +
+  labs(x="\nYear", y="Number of Female Farmers\n") +
+  theme(panel.background = element_blank()) +  
+  theme(legend.position="top") +
+  theme(plot.margin=unit(c(1,1,1.5,1.2),"cm"))+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=12,face="bold"))
+Change_Tenure 
+
+```
+
+```{r}
+# Shaping the final data.frame for prediction
+# Modifying the operators data.frame so that the value column displays only total number of operators and excludes acres
+
+# Converting factor into numeric  
+CA_operators$value <- as.numeric(CA_operators$value) 
+
+# Using maping data frame that has sum of total number of female operators for each county grouped by year 
+CA_fops <- filter(CA_operators, dataitem == "OPERATORS, (ALL), FEMALE - NUMBER OF OPERATORS")
+
+# Mergin data frames to combine number of operators with total acres for each crop, all by year and county
+CA_fops_only <- left_join(CA_crops2, CA_fops, by = c("year", "county"))
+
+#CA_fops_only <- NULL
+
+# Renaming remaining rows 
+CA_fops_only$region <- CA_fops_only$region.x
+CA_fops_only$dataitem <- CA_fops_only$dataitem.y  
+CA_fops_only$commodity.y <- CA_fops_only$commodity
+CA_fops_only$domaincategory.y <- CA_fops_only$domaincategory
+CA_fops_only$domain <- CA_fops_only$domain.y
+CA_fops_only$total_fo <- CA_fops_only$value.y
+CA_fops_only$acres <- 
+
+# Deleting duplicate rows
+CA_fops_only$region.y <- NULL
+CA_fops_only$commodity.y <- NULL
+CA_fops_only$dataitem.y <- NULL
+CA_fops_only$domaincategory.y <- NULL
+CA_fops_only$domain.y <- NULL
+CA_fops_only$acres.y <- NULL
+CA_fops_only$value.x <- NULL
+CA_fops_only$value.y <- NULL
+CA_fops_only$dataitem.y <- NULL
+CA_fops_only$region.x <- NULL 
+CA_fops_only$commodity.x <- NULL
+CA_fops_only$dataitem.x <- NULL
+CA_fops_only$domaincategory.x <- NULL
+CA_fops_only$domain.x <- NULL
+CA_fops_only$acres.x <- NULL 
+CA_fops_only$domain <- NULL
+CA_fops_only$dataitem <- NULL
+```
+
+```{r}
+# Generating dummy variables for each county
+
+CA_dummies <- CA_crops2 %>%
+  mutate(ALAMEDA = ifelse(county == "ALAMEDA", 1, 0)) %>%
+  mutate(ALPINE = ifelse(county == "ALPINE", 1, 0)) %>%
+  mutate(AMADOR = ifelse(county == "AMADOR", 1, 0)) %>%
+  mutate(BUTTE = ifelse(county == "BUTTE", 1, 0)) %>%
+  mutate(CALAVERAS = ifelse(county == "CALAVERAS", 1, 0)) %>%
+  mutate(COLUSA = ifelse(county == "COLUSA", 1, 0)) %>%
+  mutate(CONTRA_COSTA = ifelse(county == "CONTRA COSTA", 1, 0)) %>%
+  mutate(DEL_NORTE = ifelse(county == "DEL NORTE", 1, 0)) %>%
+  mutate(EL_DORADO = ifelse(county == "EL DORADO", 1, 0)) %>%
+  mutate(FRESNO = ifelse(county == "FRESNO", 1, 0)) %>%
+  mutate(GLENN = ifelse(county == "GLENN", 1, 0)) %>%
+  mutate(HUMBOLDT = ifelse(county == "HUMBOLDT", 1, 0)) %>%
+  mutate(IMPERIAL = ifelse(county == "IMPERIAL", 1, 0)) %>%
+  mutate(INYO = ifelse(county == "INYO", 1, 0)) %>%
+  mutate(KERN = ifelse(county == "KERN", 1, 0)) %>%
+  mutate(KINGS = ifelse(county == "KINGS", 1, 0)) %>%
+  mutate(LAKE = ifelse(county == "LAKE", 1, 0)) %>%
+  mutate(LASSEN = ifelse(county == "LASSEN", 1, 0)) %>%
+  mutate(LOS_ANGELES = ifelse(county == "LOS ANGELES", 1, 0)) %>%
+  mutate(MADERA = ifelse(county == "MADERA", 1, 0)) %>%
+  mutate(MARIN = ifelse(county == "MARIN", 1, 0)) %>%
+  mutate(MARIPOSA = ifelse(county == "MARIPOSA", 1, 0)) %>%
+  mutate(MENDOCINO = ifelse(county == "MENDOCINO", 1, 0)) %>%
+  mutate(MERCED = ifelse(county == "MERCED", 1, 0)) %>%
+  mutate(MODOC = ifelse(county == "MODOC", 1, 0)) %>%
+  mutate(MONO = ifelse(county == "MONO", 1, 0)) %>%
+  mutate(MONTEREY = ifelse(county == "MONTEREY", 1, 0)) %>%
+  mutate(NAPA = ifelse(county == "NAPA", 1, 0)) %>%
+  mutate(NEVADA = ifelse(county == "NEVADA", 1, 0)) %>%
+  mutate(ORANGE = ifelse(county == "ORANGE", 1, 0)) %>%
+  mutate(PLACER = ifelse(county == "PLACER", 1, 0)) %>%
+  mutate(PLUMAS = ifelse(county == "PLUMAS", 1, 0)) %>%
+  mutate(RIVERSIDE = ifelse(county == "RIVERSIDE", 1, 0)) %>%
+  mutate(SACRAMENTO = ifelse(county == "SACRAMENTO", 1, 0)) %>%
+  mutate(SAN_BENITO = ifelse(county == "SAN BENITO", 1, 0)) %>%
+  mutate(SAN_BERNARDINO = ifelse(county == "SAN BERNARDINO", 1, 0)) %>%
+  mutate(SAN_DIEGO = ifelse(county == "SAN DIEGO", 1, 0)) %>%
+  mutate(SAN_FRANCISCO = ifelse(county == "SAN FRANCISCO", 1, 0)) %>%
+  mutate(SAN_JOAQUIN = ifelse(county == "SAN JOAQUIN", 1, 0)) %>%
+  mutate(SAN_LUIS_OBISPO = ifelse(county == "SAN LUIS OBISPO", 1, 0)) %>%
+  mutate(SAN_MATEO = ifelse(county == "SAN MATEO", 1, 0)) %>%
+  mutate(SANTA_BARBARA = ifelse(county == "SANTA BARBARA", 1, 0)) %>%
+  mutate(SANTA_CLARA = ifelse(county == "SANTA CLARA", 1, 0)) %>%
+  mutate(SANTA_CRUZ = ifelse(county == "SANTA CRUZ", 1, 0)) %>%
+  mutate(SHASTA = ifelse(county == "SHASTA", 1, 0)) %>%
+  mutate(SIERRA = ifelse(county == "SIERRA", 1, 0)) %>%
+  mutate(SISKIYOU = ifelse(county == "SISKIYOU", 1, 0)) %>%
+  mutate(SOLANO = ifelse(county == "SOLANO", 1, 0)) %>%
+  mutate(SONOMA = ifelse(county == "SONOMA", 1, 0)) %>%
+  mutate(STANISLAUS = ifelse(county == "STANISLAUS", 1, 0)) %>%
+  mutate(SUTTER = ifelse(county == "SUTTER", 1, 0)) %>%
+  mutate(TEHAMA = ifelse(county == "TEHAMA", 1, 0)) %>%
+  mutate(TRINITY = ifelse(county == "TRINITY", 1, 0)) %>%
+  mutate(TULARE = ifelse(county == "TULARE", 1, 0)) %>%
+  mutate(TUOLUMNE = ifelse(county == "TUOLUMNE", 1, 0)) %>%
+  mutate(VENTURA = ifelse(county == "VENTURA", 1, 0)) %>%
+  mutate(YOLO = ifelse(county == "YOLO", 1, 0)) %>%
+  mutate(YUBA = ifelse(county == "YUBA", 1, 0))
+
+# Generating dummy variables for each crop
+CA_dummies <- CA_dummies %>%
+  mutate(ALMONDS = ifelse(commodity == "ALMONDS", 1, 0)) %>%
+  mutate(APPLES = ifelse(commodity == "APPLES", 1, 0)) %>%
+  mutate(APRICOTS = ifelse(commodity == "APRICOTS", 1, 0)) %>%
+  mutate(AVOCADOS = ifelse(commodity == "AVOCADOS", 1, 0)) %>%
+  mutate(BANANAS = ifelse(commodity == "BANANAS", 1, 0)) %>%
+  mutate(CHERRIES = ifelse(commodity == "CHERRIES", 1, 0)) %>%
+  mutate(CHESTNUTS = ifelse(commodity == "CHESTNUTS", 1, 0)) %>%
+  mutate(DATES = ifelse(commodity == "DATES", 1, 0)) %>%
+  mutate(FIGS = ifelse(commodity == "FIGS", 1, 0)) %>%
+  mutate(GRAPEFRUIT = ifelse(commodity == "GRAPEFRUIT", 1, 0)) %>%
+  mutate(GRAPES = ifelse(commodity == "GRAPES", 1, 0)) %>%
+  mutate(GUAVAS = ifelse(commodity == "GUAVAS", 1, 0)) %>%
+  mutate(HAZELNUTS = ifelse(commodity == "HAZELNUTS", 1, 0)) %>%
+  mutate(KIWIFRUIT = ifelse(commodity == "KIWIFRUIT", 1, 0)) %>%
+  mutate(KUMQUATS = ifelse(commodity == "KUMQUATS", 1, 0)) %>%
+  mutate(LEMONS = ifelse(commodity == "LEMONS", 1, 0)) %>%
+  mutate(LIMES = ifelse(commodity == "LIMES", 1, 0)) %>%
+  mutate(MACADAMIAS = ifelse(commodity == "MACADAMIAS", 1, 0)) %>%
+  mutate(MANGOES = ifelse(commodity == "MANGOES", 1, 0)) %>%
+  mutate(NECTARINES = ifelse(commodity == "NECTARINES", 1, 0)) %>%
+  mutate(OLIVES = ifelse(commodity == "OLIVES", 1, 0)) %>%
+  mutate(ORANGES = ifelse(commodity == "ORANGES", 1, 0)) %>%
+  mutate(ORCHARDS = ifelse(commodity == "ORCHARDS", 1, 0)) %>%
+  mutate(PAPAYAS = ifelse(commodity == "PAPAYAS", 1, 0)) %>%
+  mutate(PASSION_FRUIT = ifelse(commodity == "PASSION_FRUIT", 1, 0)) %>%
+  mutate(PEACHES = ifelse(commodity == "PEACHES", 1, 0)) %>%
+  mutate(PEARS = ifelse(commodity == "PEARS", 1, 0)) %>%
+  mutate(PECANS = ifelse(commodity == "PECANS", 1, 0)) %>%
+  mutate(PERSIMMONS = ifelse(commodity == "PERSIMMONS", 1, 0)) %>%
+  mutate(PISTACHIOS = ifelse(commodity == "PISTACHIOS", 1, 0)) %>%
+  mutate(PLUMS_PRUNES = ifelse(commodity == "PLUMS & PRUNES", 1, 0)) %>%
+  mutate(POMEGRANATES = ifelse(commodity == "POMEGRANATES", 1, 0)) %>%
+  mutate(TANGERINES = ifelse(commodity == "TANGERINES", 1, 0)) %>%
+  mutate(WALNUTS = ifelse(commodity == "WALNUTS", 1, 0))
+```
+
+```{r}
+# Merging re-shaped tenure data with larger dataset that includes dummy variables 
+CA_merged <- left_join(CA_dummies, Tenure_spread, by = c("year", "county"))
+
+# Final merged data set (needs bug fixes and clean up)
+CA_Final <- left_join(CA_merged, CA_fops_only, by = c("year", "county"))
+```
+
+```{r}
+
+# Model to run a logistic regression once final data set is merged correctly: 
+# tenure statusi = α + βCommodityi + γCountyi + δAcres + ηOperators + εi 
+
+glm_model <- glm(tenure ~ commodity + county + acres + total_fo)
